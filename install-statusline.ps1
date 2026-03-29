@@ -7,8 +7,10 @@ $Settings  = "$ClaudeDir\settings.json"
 
 New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
 
+$utf8NoBOM = [System.Text.UTF8Encoding]::new($false)
+
 # Escribir el script de status line
-@'
+$scriptContent = @'
 $input_data = $input | Out-String | ConvertFrom-Json
 
 $ESC   = [char]27
@@ -69,7 +71,8 @@ if ($null -ne $seven_day) {
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Write-Host ($parts -join $SEP) -NoNewline
-'@ | Set-Content -Encoding UTF8 $Script
+'@
+[System.IO.File]::WriteAllText($Script, $scriptContent, $utf8NoBOM)
 
 # Actualizar settings.json
 $statusLineConfig = @{
@@ -82,9 +85,9 @@ $statusLineConfig = @{
 if (Test-Path $Settings) {
     $existing = Get-Content $Settings -Raw | ConvertFrom-Json
     $existing | Add-Member -NotePropertyName "statusLine" -NotePropertyValue $statusLineConfig.statusLine -Force
-    $existing | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $Settings
+    [System.IO.File]::WriteAllText($Settings, ($existing | ConvertTo-Json -Depth 5), $utf8NoBOM)
 } else {
-    $statusLineConfig | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $Settings
+    [System.IO.File]::WriteAllText($Settings, ($statusLineConfig | ConvertTo-Json -Depth 5), $utf8NoBOM)
 }
 
 Write-Host "Instalado. Reinicia Claude Code para ver la status line."

@@ -33,7 +33,7 @@ function Get-Color($pct) {
 function Get-Bar($pct) {
     $filled = [math]::Floor($pct * 8 / 100)
     $empty  = 8 - $filled
-    return ("█" * $filled) + ("░" * $empty)
+    return ([char]0x2588).ToString() * $filled + ([char]0x2591).ToString() * $empty
 }
 
 $model     = $input_data.model.display_name

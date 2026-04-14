@@ -37,6 +37,10 @@ _tot_s=$(( 7*86400 ))
 [ "$_now_s" -ge "$_rst_s" ] && _elp_s=$(( _now_s - _rst_s )) \
                               || _elp_s=$(( _tot_s - _rst_s + _now_s ))
 CICLO_PCT=$(( _elp_s * 100 / _tot_s ))
+_rem_s=$(( _tot_s - _elp_s ))
+_rem_d=$(( _rem_s / 86400 ))
+_rem_h=$(( (_rem_s % 86400) / 3600 ))
+[ "$_rem_d" -gt 0 ] && CICLO_REM="${_rem_d}d" || CICLO_REM="${_rem_h}h"
 
 RED='\033[31m'; YELLOW='\033[33m'; GREEN='\033[32m'
 CYAN='\033[36m'; BLUE='\033[34m'; DIM='\033[2m'
@@ -98,7 +102,7 @@ if [ -n "$seven_day" ]; then
   elif [ "$_delta" -le 15 ]; then _dcol="$YELLOW"
   else _dcol="$RED"; fi
   [ "$_delta" -ge 0 ] && _dsign="+" || _dsign=""
-  parts+=("${DIM}7d${RESET} ${col}${b} ${wpct}%${RESET} ${DIM}(${RESET}${_dcol}${_dsign}${_delta}%${RESET}${DIM})${RESET}")
+    parts+=("${DIM}7d${RESET} ${col}${b} ${wpct}%${RESET} ${DIM}${CICLO_REM} (${RESET}${_dcol}${_dsign}${_delta}%${RESET}${DIM})${RESET}")
 fi
 
 out=""

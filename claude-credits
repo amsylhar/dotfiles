@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # claude-credits — Check if Claude Code credit usage is on pace with the weekly cycle
-#                  Credits reset every Thursday at 17:00 (configurable)
 #
 # Usage: claude-credits [0-100]
 #        Without argument, reads the cache written by the status line.
 #        The status line must be installed (see claude-statusline-install.sh).
 #
-# Config (env vars):
+# The cache file written by the status line contains: "<pct> <reset_epoch>"
+# If the epoch is present, the cycle position is calculated dynamically.
+# Fallback env vars (used only when cache has no epoch):
 #   CLAUDE_RESET_DOW   Day of week for reset (ISO: 1=Mon … 7=Sun). Default: 4 (Thu)
 #   CLAUDE_RESET_HOUR  Hour of reset (0-23). Default: 17
 set -euo pipefail
@@ -24,6 +25,7 @@ else
 fi
 
 # ── Get usage % ───────────────────────────────────────────────────────────────
+RESET_EPOCH=""
 if [[ $# -eq 1 ]]; then
     if [[ ! $1 =~ ^[0-9]+$ ]] || [[ $1 -gt 100 ]]; then
         printf "Usage: claude-credits [0-100]\n" >&2; exit 1
@@ -31,7 +33,8 @@ if [[ $# -eq 1 ]]; then
     USED=$1
     SOURCE="manual"
 elif [[ -f "$CACHE" ]]; then
-    USED=$(awk '{printf "%.0f", $1}' "$CACHE")
+    read -r USED_RAW RESET_EPOCH < "$CACHE"
+    USED=$(printf '%.0f' "$USED_RAW")
     SOURCE="cache"
 else
     printf "\n  ${YLW}No data.${RST} Open Claude Code to update the cache, or pass the value:\n"
@@ -39,30 +42,45 @@ else
     exit 1
 fi
 
-# ── Cycle position (reset_day 17:00 → reset_day 17:00) ───────────────────────
-DOW=$(date +%u)
-H=$(date +%-H)
-M=$(date +%-M)
-
-NOW_S=$(( (DOW-1)*86400 + H*3600 + M*60 ))
-RST_S=$(( (RESET_DOW-1)*86400 + RESET_HOUR*3600 ))
+# ── Cycle position ────────────────────────────────────────────────────────────
 CYCLE_S=$(( 7*86400 ))
 
-if (( NOW_S >= RST_S )); then
-    ELP_S=$(( NOW_S - RST_S ))
+if [[ -n "$RESET_EPOCH" ]] && [[ "$RESET_EPOCH" =~ ^[0-9]+$ ]]; then
+    NOW=$(date +%s)
+    _diff=$(( RESET_EPOCH - NOW ))
+    if (( _diff > 0 )); then
+        ELP_S=$(( CYCLE_S - _diff ))
+        REM_S=$_diff
+    else
+        ELP_S=$CYCLE_S
+        REM_S=0
+    fi
+    ELP_PCT=$(( ELP_S * 100 / CYCLE_S ))
+    REM_H=$(( REM_S / 3600 ))
+    REM_D=$(( REM_H / 24 ))
+    REM_HR=$(( REM_H % 24 ))
+    NEXT_RST=$(date -d "@${RESET_EPOCH}" '+%a %d %b  %H:%M' 2>/dev/null \
+            || date -r "${RESET_EPOCH}" '+%a %d %b  %H:%M' 2>/dev/null \
+            || echo "unknown")
 else
-    ELP_S=$(( CYCLE_S - RST_S + NOW_S ))
+    # Fallback: DOW/hora configurado (solo si el cache no tiene epoch)
+    DOW=$(date +%u); H=$(date +%-H); M=$(date +%-M)
+    NOW_S=$(( (DOW-1)*86400 + H*3600 + M*60 ))
+    RST_S=$(( (RESET_DOW-1)*86400 + RESET_HOUR*3600 ))
+    if (( NOW_S >= RST_S )); then
+        ELP_S=$(( NOW_S - RST_S ))
+    else
+        ELP_S=$(( CYCLE_S - RST_S + NOW_S ))
+    fi
+    REM_S=$(( CYCLE_S - ELP_S ))
+    ELP_PCT=$(( ELP_S * 100 / CYCLE_S ))
+    REM_H=$(( REM_S / 3600 ))
+    REM_D=$(( REM_H / 24 ))
+    REM_HR=$(( REM_H % 24 ))
+    NEXT_RST=$(date -d "+${REM_H} hours" '+%a %d %b  %H:%M' 2>/dev/null \
+            || date -v "+${REM_H}H" '+%a %d %b  %H:%M' 2>/dev/null \
+            || echo "unknown")
 fi
-
-REM_S=$(( CYCLE_S - ELP_S ))
-ELP_PCT=$(( ELP_S * 100 / CYCLE_S ))
-REM_H=$(( REM_S / 3600 ))
-REM_D=$(( REM_H / 24 ))
-REM_HR=$(( REM_H % 24 ))
-
-# Next reset timestamp
-NEXT_RST=$(date -d "+${REM_H} hours" '+%a %d %b  %H:%M' 2>/dev/null \
-        || date -v "+${REM_H}H" '+%a %d %b  %H:%M' 2>/dev/null)
 
 # ── Progress bar ──────────────────────────────────────────────────────────────
 W=22
@@ -88,12 +106,9 @@ fi
 SEP=""; for _ in {1..54}; do SEP+='─'; done
 
 # ── Output ────────────────────────────────────────────────────────────────────
-RESET_DAY_NAME=$(date -d "next thursday" '+%a' 2>/dev/null || echo "Thu")
-
 printf "\n"
 printf "  ${DIM}%s${RST}\n" "$SEP"
-printf "  ${BLD}${CYN}  Claude Credits${RST}  ${DIM}·  weekly cycle (Thu %02d:00 → Thu %02d:00)${RST}\n" \
-    "$RESET_HOUR" "$RESET_HOUR"
+printf "  ${BLD}${CYN}  Claude Credits${RST}  ${DIM}·  weekly cycle${RST}\n"
 printf "  ${DIM}%s${RST}\n" "$SEP"
 printf "\n"
 printf "  Cycle  $(bar "$ELP_PCT" "$DIM")  ${BLD}%3d%%${RST}  ${DIM}%s${RST}\n" \

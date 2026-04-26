@@ -2,8 +2,8 @@
 # Install Claude Code status line with:
 #   - Context window usage
 #   - 5h rate limit + countdown to reset + pace delta
-#   - 7d rate limit + weekly cycle pace delta (resets every Thursday 17:00)
-#   - Model name, vim mode, agent name
+#   - 7d rate limit + dynamic cycle from API + pace delta
+#   - Model name, vim mode, agent name, worktree
 #   - Writes credits cache for claude-credits tool
 set -e
 
@@ -16,31 +16,56 @@ mkdir -p "$CLAUDE_DIR"
 cat > "$SCRIPT" << 'EOF'
 #!/bin/bash
 # Claude Code status line
+
 input=$(cat)
 
-model=$(echo "$input"    | jq -r '.model.display_name // "unknown"')
-used=$(echo "$input"     | jq -r '.context_window.used_percentage // empty')
-vim_mode=$(echo "$input" | jq -r '.vim.mode // empty')
-five_hr=$(echo "$input"  | jq -r '.rate_limits.five_hour.used_percentage // empty')
-seven_day=$(echo "$input"| jq -r '.rate_limits.seven_day.used_percentage // empty')
-agent_name=$(echo "$input"| jq -r '.agent.name // empty')
-worktree=$(echo "$input" | jq -r '.worktree.name // empty')
+mapfile -t _f < <(printf '%s' "$input" | jq -r '
+  (.model.display_name // "unknown"),
+  ((.context_window.used_percentage // "") | tostring),
+  (.vim.mode // ""),
+  (.agent.name // ""),
+  (.worktree.name // ""),
+  ((.rate_limits.five_hour.used_percentage // "") | tostring),
+  ((.rate_limits.five_hour.resets_at // "") | tostring),
+  ((.rate_limits.seven_day.used_percentage // "") | tostring),
+  ((.rate_limits.seven_day.resets_at // "") | tostring)
+')
+model="${_f[0]}"
+used="${_f[1]}"
+vim_mode="${_f[2]}"
+agent_name="${_f[3]}"
+worktree="${_f[4]}"
+five_hr="${_f[5]}"
+five_hr_reset="${_f[6]}"
+seven_day="${_f[7]}"
+seven_day_reset="${_f[8]}"
 
-# Cache 7d value for claude-credits tool
-[ -n "$seven_day" ] && printf '%s\n' "$seven_day" > "${HOME}/.claude/credits-cache" 2>/dev/null || true
+[ -n "$seven_day" ] && printf '%s %s\n' "$seven_day" "${seven_day_reset}" > "${HOME}/.claude/credits-cache" 2>/dev/null || true
 
-# ── Weekly cycle position (Thu 17:00 → Thu 17:00) ────────────────────────────
-_dow=$(date +%u); _h=$(date +%-H); _m=$(date +%-M)
-_now_s=$(( (_dow-1)*86400 + _h*3600 + _m*60 ))
-_rst_s=$(( 3*86400 + 17*3600 ))
-_tot_s=$(( 7*86400 ))
-[ "$_now_s" -ge "$_rst_s" ] && _elp_s=$(( _now_s - _rst_s )) \
-                              || _elp_s=$(( _tot_s - _rst_s + _now_s ))
-CICLO_PCT=$(( _elp_s * 100 / _tot_s ))
-_rem_s=$(( _tot_s - _elp_s ))
-_rem_d=$(( _rem_s / 86400 ))
-_rem_h=$(( (_rem_s % 86400) / 3600 ))
-[ "$_rem_d" -gt 0 ] && CICLO_REM="${_rem_d}d" || CICLO_REM="${_rem_h}h"
+# ── Posición en el ciclo 7d usando resets_at real de la API ─────────────────
+CICLO_PCT=""
+CICLO_REM=""
+if [ -n "$seven_day_reset" ]; then
+  _now=$(date +%s)
+  _diff=$(( seven_day_reset - _now ))
+  _tot_s=$(( 7*86400 ))
+  if [ "$_diff" -gt 0 ]; then
+    _elp_s=$(( _tot_s - _diff ))
+    CICLO_PCT=$(( _elp_s * 100 / _tot_s ))
+    _rem_d=$(( _diff / 86400 ))
+    _rem_h=$(( (_diff % 86400) / 3600 ))
+    if [ "$_rem_d" -gt 0 ] && [ "$_rem_h" -gt 0 ]; then
+      CICLO_REM="${_rem_d}d ${_rem_h}h"
+    elif [ "$_rem_d" -gt 0 ]; then
+      CICLO_REM="${_rem_d}d"
+    else
+      CICLO_REM="${_rem_h}h"
+    fi
+  else
+    CICLO_PCT=100
+    CICLO_REM="0h"
+  fi
+fi
 
 RED='\033[31m'; YELLOW='\033[33m'; GREEN='\033[32m'
 CYAN='\033[36m'; BLUE='\033[34m'; DIM='\033[2m'
@@ -70,15 +95,12 @@ fi
 
 if [ -n "$five_hr" ]; then
   fpct=$(printf '%.0f' "$five_hr"); col=$(color_pct "$fpct"); b=$(bar "$fpct")
-  reset_time=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-  if [ -n "$reset_time" ]; then
+  if [ -n "$five_hr_reset" ]; then
     _now=$(date +%s)
-    _rst=$(echo "$reset_time" | cut -c1-10)
-    _diff=$(( _rst - _now ))
+    _diff=$(( five_hr_reset - _now ))
     if [ "$_diff" -gt 0 ]; then
       _rh=$(( _diff / 3600 )); _rm=$(( (_diff % 3600) / 60 ))
       [ "$_rh" -gt 0 ] && _rfmt="${_rh}h ${_rm}m" || _rfmt="${_rm}m"
-      # Pace delta for 5h window
       _5h_elapsed=$(( 5*3600 - _diff ))
       _5h_epct=$(( _5h_elapsed * 100 / (5*3600) ))
       _5h_delta=$(( fpct - _5h_epct ))
@@ -97,12 +119,16 @@ fi
 
 if [ -n "$seven_day" ]; then
   wpct=$(printf '%.0f' "$seven_day"); col=$(color_pct "$wpct"); b=$(bar "$wpct")
-  _delta=$(( wpct - CICLO_PCT ))
-  if [ "$_delta" -le 5 ] && [ "$_delta" -ge -100 ]; then _dcol="$GREEN"
-  elif [ "$_delta" -le 15 ]; then _dcol="$YELLOW"
-  else _dcol="$RED"; fi
-  [ "$_delta" -ge 0 ] && _dsign="+" || _dsign=""
+  if [ -n "$CICLO_PCT" ]; then
+    _delta=$(( wpct - CICLO_PCT ))
+    if [ "$_delta" -le 5 ] && [ "$_delta" -ge -100 ]; then _dcol="$GREEN"
+    elif [ "$_delta" -le 15 ]; then _dcol="$YELLOW"
+    else _dcol="$RED"; fi
+    [ "$_delta" -ge 0 ] && _dsign="+" || _dsign=""
     parts+=("${DIM}7d${RESET} ${col}${b} ${wpct}%${RESET} ${DIM}${CICLO_REM} (${RESET}${_dcol}${_dsign}${_delta}%${RESET}${DIM})${RESET}")
+  else
+    parts+=("${DIM}7d${RESET} ${col}${b} ${wpct}%${RESET}")
+  fi
 fi
 
 out=""

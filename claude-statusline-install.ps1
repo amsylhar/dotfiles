@@ -148,7 +148,7 @@ $scriptPath = $Script -replace '\\','/'
 $statusLineConfig = @{
     statusLine = @{
         type    = "command"
-        command = "powershell -NoProfile -Command `"`$input | & '$scriptPath'`""
+        command = "powershell -NoProfile -Command `"\`$input | & '$scriptPath'`""
     }
 }
 

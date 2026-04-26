@@ -12,6 +12,17 @@ $utf8BOM   = [System.Text.UTF8Encoding]::new($true)
 
 # Single-quoted here-string: nothing is expanded, no escaping needed
 $scriptContent = @'
+# Enable ANSI/VT processing on Windows consoles that need it
+if ($Host.UI.SupportsVirtualTerminal -ne $true) {
+    try {
+        $sig = '[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);'
+        $k = Add-Type -MemberDefinition $sig -Name K32 -Namespace VT -PassThru
+        $h = $k::GetStdHandle(-11); $m = 0
+        $k::GetConsoleMode($h, [ref]$m) | Out-Null
+        $k::SetConsoleMode($h, $m -bor 4) | Out-Null
+    } catch {}
+}
+
 $input_data = $input | Out-String | ConvertFrom-Json
 
 $ESC    = [char]27
@@ -63,7 +74,7 @@ if ($null -ne $seven_day) {
     [System.IO.File]::WriteAllText(
         "$cacheDir\credits-cache",
         "$seven_day $resetStr".Trim(),
-        [System.Text.Encoding]::UTF8
+        [System.Text.UTF8Encoding]::new($false)
     )
 }
 
@@ -72,7 +83,7 @@ $parts    = @()
 
 if ($vim_mode) { $parts += "${YELLOW}${vim_mode}${RESET}" }
 if ($agent)    { $parts += "${CYAN}$([char]0x2699) ${agent}${RESET}" }
-if ($worktree) { $parts += "${DIM}$([char]0x2387) ${worktree}${RESET}" }
+if ($worktree) { $parts += "${DIM}$([char]0x2261) ${worktree}${RESET}" }
 $parts += "${BOLD}${BLUE}${model}${RESET}"
 
 if ($null -ne $used) {

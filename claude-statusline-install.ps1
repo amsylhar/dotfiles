@@ -23,7 +23,7 @@ if ($Host.UI.SupportsVirtualTerminal -ne $true) {
     } catch {}
 }
 
-$input_data = $input | Out-String | ConvertFrom-Json
+$input_data = [Console]::In.ReadToEnd() | ConvertFrom-Json
 
 $ESC    = [char]27
 $RED    = "$ESC[31m"
@@ -148,7 +148,7 @@ $scriptPath = $Script -replace '\\','/'
 $statusLineConfig = @{
     statusLine = @{
         type    = "command"
-        command = "powershell -NoProfile -Command `"\`$input | & '$scriptPath'`""
+        command = "powershell -NoProfile -File '$scriptPath'"
     }
 }
 

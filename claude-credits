@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# claude-credits — Check if Claude Code credit usage is on pace with the weekly cycle
+#
+# Usage: claude-credits [0-100]
+#        Without argument, reads the cache written by the status line.
+#        The status line must be installed (see claude-statusline-install.sh).
+#
+# The cache file written by the status line contains: "<pct> <reset_epoch>"
+# If the epoch is present, the cycle position is calculated dynamically.
+# Fallback env vars (used only when cache has no epoch):
+#   CLAUDE_RESET_DOW   Day of week for reset (ISO: 1=Mon … 7=Sun). Default: 4 (Thu)
+#   CLAUDE_RESET_HOUR  Hour of reset (0-23). Default: 17
+set -euo pipefail
+
+CACHE="${HOME}/.claude/credits-cache"
+RESET_DOW="${CLAUDE_RESET_DOW:-4}"
+RESET_HOUR="${CLAUDE_RESET_HOUR:-17}"
+
+# How far ahead of the cycle the usage may run before the verdict stops being
+# green. Keep these in sync with the status line installers.
+PACE_OK=5
+PACE_WARN=15
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'  YLW=$'\033[0;33m'  GRN=$'\033[0;32m'
+    CYN=$'\033[0;36m'  BLD=$'\033[1m'     DIM=$'\033[2m'     RST=$'\033[0m'
+else
+    RED='' YLW='' GRN='' CYN='' BLD='' DIM='' RST=''
+fi
+
+# Round "43.6" → 44 without printf %f, which parses decimals per LC_NUMERIC
+# (in comma-decimal locales it warns and truncates). Accepts "." and ",".
+round_pct() {
+    local v=${1//,/.} int frac
+    int=${v%%.*}
+    case $int in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+    frac=${v#*.}
+    if [[ $v == *.* ]] && [[ ${frac:0:1} == [5-9] ]]; then int=$(( int + 1 )); fi
+    printf '%s' "$int"
+}
+
+# ── Get usage % ───────────────────────────────────────────────────────────────
+RESET_EPOCH=""
+no_data() {
+    printf "\n  %sNo data.%s Open Claude Code to update the cache, or pass the value:\n" "$YLW" "$RST"
+    printf "  claude-credits 40\n\n"
+    exit 1
+}
+
+if [[ $# -eq 1 ]]; then
+    if [[ ! $1 =~ ^[0-9]+$ ]] || [[ $1 -gt 100 ]]; then
+        printf "Usage: claude-credits [0-100]\n" >&2; exit 1
+    fi
+    USED=$1
+    SOURCE="manual"
+elif [[ -f "$CACHE" ]]; then
+    USED_RAW=""; RESET_EPOCH=""
+    read -r USED_RAW RESET_EPOCH < "$CACHE" || true
+    [[ $USED_RAW =~ ^[0-9]+([.,][0-9]+)?$ ]] || no_data
+    USED=$(round_pct "$USED_RAW")
+    SOURCE="cache"
+else
+    no_data
+fi
+
+# ── Cycle position ────────────────────────────────────────────────────────────
+CYCLE_S=$(( 7*86400 ))
+STALE=0
+
+if [[ -n "$RESET_EPOCH" ]] && [[ "$RESET_EPOCH" =~ ^[0-9]+$ ]]; then
+    NOW=$(date +%s)
+    _diff=$(( RESET_EPOCH - NOW ))
+    if (( _diff > 0 )); then
+        ELP_S=$(( CYCLE_S - _diff ))
+        REM_S=$_diff
+    else
+        # The cached reset time is in the past: the cycle rolled over and the
+        # status line has not refreshed the cache yet. Data is not current.
+        ELP_S=$CYCLE_S
+        REM_S=0
+        STALE=1
+    fi
+    ELP_PCT=$(( ELP_S * 100 / CYCLE_S ))
+    REM_H=$(( REM_S / 3600 ))
+    REM_D=$(( REM_H / 24 ))
+    REM_HR=$(( REM_H % 24 ))
+    NEXT_RST=$(date -d "@${RESET_EPOCH}" '+%a %d %b  %H:%M' 2>/dev/null \
+            || date -r "${RESET_EPOCH}" '+%a %d %b  %H:%M' 2>/dev/null \
+            || echo "unknown")
+else
+    # Fallback: configured DOW/hour (only when the cache carries no epoch)
+    DOW=$(date +%u); H=$(date +%-H); M=$(date +%-M)
+    NOW_S=$(( (DOW-1)*86400 + H*3600 + M*60 ))
+    RST_S=$(( (RESET_DOW-1)*86400 + RESET_HOUR*3600 ))
+    if (( NOW_S >= RST_S )); then
+        ELP_S=$(( NOW_S - RST_S ))
+    else
+        ELP_S=$(( CYCLE_S - RST_S + NOW_S ))
+    fi
+    REM_S=$(( CYCLE_S - ELP_S ))
+    ELP_PCT=$(( ELP_S * 100 / CYCLE_S ))
+    REM_H=$(( REM_S / 3600 ))
+    REM_D=$(( REM_H / 24 ))
+    REM_HR=$(( REM_H % 24 ))
+    NEXT_RST=$(date -d "+${REM_H} hours" '+%a %d %b  %H:%M' 2>/dev/null \
+            || date -v "+${REM_H}H" '+%a %d %b  %H:%M' 2>/dev/null \
+            || echo "unknown")
+fi
+
+# ── Progress bar ──────────────────────────────────────────────────────────────
+W=22
+bar() {
+    local pct=$1 col=$2 res="" i
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
+    local filled=$(( pct * W / 100 ))
+    for (( i=0; i<W; i++ )); do
+        if (( i < filled )); then res+='█'; else res+='░'; fi
+    done
+    printf "%s%s%s" "$col" "$res" "$RST"
+}
+
+# ── Delta and verdict ─────────────────────────────────────────────────────────
+DELTA=$(( USED - ELP_PCT ))
+
+if   (( DELTA < 0 ));          then VCOL=$GRN; UCOL=$GRN; VERDICT="▼  ${DELTA}%"
+elif (( DELTA <= PACE_OK ));   then VCOL=$GRN; UCOL=$GRN; VERDICT="●  +${DELTA}%"
+elif (( DELTA <= PACE_WARN )); then VCOL=$YLW; UCOL=$YLW; VERDICT="▲  +${DELTA}%"
+else                                VCOL=$RED; UCOL=$RED; VERDICT="▲  +${DELTA}%"
+fi
+
+if (( STALE )); then
+    VCOL=$YLW; UCOL=$YLW
+    VERDICT="⚠  stale — this cycle already reset, open Claude Code to refresh"
+fi
+
+# ── Separator ─────────────────────────────────────────────────────────────────
+SEP=""; for _ in {1..54}; do SEP+='─'; done
+
+# ── Output ────────────────────────────────────────────────────────────────────
+printf "\n"
+printf "  %s%s%s\n" "$DIM" "$SEP" "$RST"
+printf "  %s%s  Claude Credits%s  %s·  weekly cycle%s\n" "$BLD" "$CYN" "$RST" "$DIM" "$RST"
+printf "  %s%s%s\n" "$DIM" "$SEP" "$RST"
+printf "\n"
+printf "  Cycle  %s  %s%3d%%%s  %s%s%s\n" \
+    "$(bar "$ELP_PCT" "$DIM")" "$BLD" "$ELP_PCT" "$RST" "$DIM" "$(date '+%a %d %b  %H:%M')" "$RST"
+printf "  Usage  %s  %s%3d%%%s  %s(%s)%s\n" \
+    "$(bar "$USED" "$UCOL")" "$BLD" "$USED" "$RST" "$DIM" "$SOURCE" "$RST"
+printf "\n"
+printf "  %s%s%s%s\n" "$VCOL" "$BLD" "$VERDICT" "$RST"
+printf "\n"
+if (( STALE )); then
+    printf "  %sCycle ended: %s  ·  waiting for a fresh reading%s\n" "$DIM" "$NEXT_RST" "$RST"
+else
+    printf "  %sNext reset: %s  ·  %dd %dh%s\n" "$DIM" "$NEXT_RST" "$REM_D" "$REM_HR" "$RST"
+fi
+printf "  %s%s%s\n" "$DIM" "$SEP" "$RST"
+printf "\n"
